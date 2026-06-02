@@ -1,0 +1,240 @@
+﻿version: "3.8"
+
+x-airflow-common: &airflow-common
+  build: .
+  image: airflow-custom:2.8.0
+  environment:
+    AIRFLOW__CORE__EXECUTOR: LocalExecutor
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres/airflow
+    AIRFLOW__CORE__FERNET_KEY: YOUR_FERNET_KEY_HERE
+    AIRFLOW__WEBSERVER__SECRET_KEY: mysecretkey123
+    AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "true"
+    AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+    AIRFLOW__CORE__AUTH_MANAGER: airflow.providers.fab.auth_manager.fab_auth_manager.FabAuthManager
+    PYTHONPATH: /opt/airflow
+    JAVA_HOME: /usr/lib/jvm/java-17-openjdk-amd64
+    AIRFLOW_CONTAINER_HOST: airflow-scheduler
+  volumes:
+    - ./airflow/dags:/opt/airflow/dags
+    - ./etl:/opt/airflow/etl
+    - ./api:/opt/airflow/api
+    - ./database:/opt/airflow/database
+    - ./datasource:/opt/airflow/datasource
+    - ./spark_jobs:/opt/airflow/spark_jobs
+    - ./.env:/opt/airflow/.env
+  depends_on:
+    postgres:
+      condition: service_healthy
+    kafka:
+      condition: service_healthy
+  networks:
+    - etl_net
+
+services:
+  postgres:
+    image: postgres:15
+    container_name: airflow-postgres
+    environment:
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: airflow
+      POSTGRES_DB: airflow
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "airflow"]
+      interval: 5s
+      retries: 5
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres-db-volume:/var/lib/postgresql/data
+      - ./database/schema.sql:/docker-entrypoint-initdb.d/schema.sql
+    networks:
+      - etl_net
+
+  pgadmin:
+    image: dpage/pgadmin4
+    container_name: airflow-pgadmin
+    restart: always
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@admin.com
+      PGADMIN_DEFAULT_PASSWORD: admin
+    ports:
+      - "5050:80"
+    volumes:
+      - pgadmin-volume:/var/lib/pgadmin
+    depends_on:
+      - postgres
+    networks:
+      - etl_net
+
+  airflow-init:
+    <<: *airflow-common
+    restart: "no"
+    entrypoint: /bin/bash
+    command:
+      - -c
+      - |
+        pip install --no-cache-dir apache-airflow-providers-fab==1.0.4 &&
+        airflow db migrate &&
+        airflow users create \
+          --username admin \
+          --password admin \
+          --firstname Admin \
+          --lastname User \
+          --role Admin \
+          --email admin@example.com || true
+
+  airflow-webserver:
+    <<: *airflow-common
+    container_name: airflow-webserver
+    command: webserver
+    ports:
+      - "8081:8080"
+    restart: always
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+
+  airflow-scheduler:
+    <<: *airflow-common
+    container_name: airflow-scheduler
+    command: scheduler
+    restart: always
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.5.0
+    container_name: zookeeper
+    restart: always
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    ports:
+      - "2181:2181"
+    volumes:
+      - zookeeper-data:/var/lib/zookeeper/data
+      - zookeeper-log:/var/lib/zookeeper/log
+    networks:
+      - etl_net
+
+  kafka:
+    image: confluentinc/cp-kafka:7.5.0
+    container_name: kafka
+    restart: always
+    depends_on:
+      - zookeeper
+    ports:
+      - "9092:9092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092,PLAINTEXT_INTERNAL://kafka:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_INTERNAL:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT_INTERNAL
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+    healthcheck:
+      test: ["CMD", "kafka-broker-api-versions", "--bootstrap-server", "kafka:29092"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+    networks:
+      - etl_net
+
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    container_name: kafka-ui
+    restart: always
+    depends_on:
+      - kafka
+    ports:
+      - "8090:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: local
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:29092
+    networks:
+      - etl_net
+
+  spark-master:
+    image: apache/spark-py:latest
+    container_name: spark-master
+    user: root
+    entrypoint: /opt/spark/bin/spark-class
+    command: org.apache.spark.deploy.master.Master
+    environment:
+      - SPARK_NO_DAEMONIZE=true
+      - HADOOP_USER_NAME=root
+    ports:
+      - "8082:8080"
+      - "7077:7077"
+    restart: always
+    volumes:
+      - ./datasource:/opt/airflow/datasource
+      - ./spark_jobs:/opt/airflow/spark_jobs
+    networks:
+      - etl_net
+
+  spark-worker:
+    image: apache/spark-py:latest
+    container_name: spark-worker
+    user: root
+    entrypoint: /opt/spark/bin/spark-class
+    command: org.apache.spark.deploy.worker.Worker spark://spark-master:7077
+    environment:
+      - SPARK_NO_DAEMONIZE=true
+      - HADOOP_USER_NAME=root
+    depends_on:
+      - spark-master
+    restart: always
+    volumes:
+      - ./datasource:/opt/airflow/datasource
+      - ./spark_jobs:/opt/airflow/spark_jobs
+    networks:
+      - etl_net
+
+  streamlit:
+    build: .
+    container_name: streamlit
+    entrypoint: ["streamlit"]
+    command: ["run", "/opt/airflow/dashboard/streamlit/app.py", "--server.port", "8501", "--server.address", "0.0.0.0"]
+    environment:
+      DB_HOST: airflow-postgres
+      DB_PORT: "5432"
+      DB_NAME: airflow
+      DB_USER: airflow
+      DB_PASSWORD: airflow
+      STREAMLIT_DB_HOST: airflow-postgres
+      STREAMLIT_DB_PORT: "5432"
+      KAFKA_HOST: kafka:29092
+      KAFKA_UI_URL: http://localhost:8090
+      PGADMIN_URL: http://localhost:5050
+      AIRFLOW_WEBSERVER_URL: http://localhost:8081
+      SPARK_UI_URL: http://localhost:8082
+    ports:
+      - "8501:8501"
+    volumes:
+      - ./dashboard:/opt/airflow/dashboard
+      - ./.env:/opt/airflow/.env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    working_dir: /opt/airflow
+    networks:
+      - etl_net
+    restart: always
+
+networks:
+  etl_net:
+    driver: bridge
+
+volumes:
+  postgres-db-volume:
+  pgadmin-volume:
+  zookeeper-data:
+  zookeeper-log:
+  kafka-data:

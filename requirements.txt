@@ -1,0 +1,6 @@
+requests
+beautifulsoup4
+pandas
+psycopg2-binary
+python-dotenv
+apache-airflow==2.8.0

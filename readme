@@ -1,0 +1,43 @@
+
+18:23
+Claude responded: Yes, exactly!
+
+Yes, exactly! You understood it perfectly. Here's the clear picture:
+
+Kafka — Always streaming, acts as a buffer:
+
+API ──→ Kafka Topic (buffer) ──→ waiting...
+         "jobs_raw" topic
+         stores messages 24/7
+         doesn't care if anyone is listening
+
+Kafka just keeps collecting and holding the data like a queue — even when nothing is reading it.
+
+Spark + Airflow — Only runs on schedule:
+
+Airflow triggers (daily/@daily)
+    → produce task   → pushes to Kafka
+    → consume task   → pulls from Kafka buffer → saves to JSON
+    → spark task     → cleans JSON → saves to CSV
+    → load task      → CSV → Postgres
+
+Spark only wakes up when Airflow tells it to.
+
+Simple real world analogy:
+Component	Analogy
+API	News reporter writing articles
+Kafka	Mailbox collecting articles 24/7
+Airflow	Postman who comes once a day
+Spark	Office worker who processes the mail
+Postgres	Filing cabinet
+Streamlit	Notice board everyone reads
+
+So for your presentation say:
+
+    "Kafka acts as a real-time buffer, continuously collecting job data from the API. Every day Airflow triggers the pipeline — Spark processes the buffered data and loads it into Postgres for the dashboard."
+
+That is 100% accurate and sounds very professional.
+You are out of free messages until 10:50 PM
+Get more
+
+
