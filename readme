@@ -29,12 +29,8 @@ Spark	Office worker who processes the mail
 Postgres	Filing cabinet
 Streamlit	Notice board everyone reads
 
-So for your presentation say:
 
     "Kafka acts as a real-time buffer, continuously collecting job data from the API. Every day Airflow triggers the pipeline — Spark processes the buffered data and loads it into Postgres for the dashboard."
 
-That is 100% accurate and sounds very professional.
-You are out of free messages until 10:50 PM
-Get more
 
 
